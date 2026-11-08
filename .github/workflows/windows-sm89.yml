@@ -157,7 +157,7 @@ jobs:
           cmake --version || exit /b 1
           ninja --version || exit /b 1
           python tools\windows_build_preflight.py --source-only || exit /b 1
-          python tools\ci_retry_configure.py -- cmake --preset windows-release -B %BUILD_DIR% -DBUILD_PORTABLE=ON -DBUILD_CUDA_MIN_SM=89 -DBUILD_PYTHON_STUBS=OFF -DBUILD_LOCALIZATION_TESTS=ON -DLFS_VCPKG_CLEAN_AFTER_BUILD=ON -DENABLE_COMPILER_CACHE=OFF -DVCPKG_INSTALL_OPTIONS=--downloads-root=%VCPKG_DOWNLOADS% || exit /b 1
+          python tools\ci_retry_configure.py -- cmake --preset windows-release -B %BUILD_DIR% -DBUILD_PORTABLE=ON -DBUILD_CUDA_MIN_SM=89 -DBUILD_PYTHON_STUBS=OFF -DBUILD_LOCALIZATION_TESTS=ON -DENABLE_COMPILER_CACHE=OFF "-DVCPKG_INSTALL_OPTIONS=--downloads-root=%VCPKG_DOWNLOADS%;--clean-buildtrees-after-build;--clean-packages-after-build" || exit /b 1
           findstr /r /x /c:"CMAKE_BUILD_TYPE:[A-Z]*=Release" %BUILD_DIR%\CMakeCache.txt || exit /b 1
           findstr /x /c:"CMAKE_CUDA_ARCHITECTURES:STRING=89-virtual" %BUILD_DIR%\CMakeCache.txt || exit /b 1
       - name: Cache downloaded and compiled dependencies for retry
