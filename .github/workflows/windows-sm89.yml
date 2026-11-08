@@ -37,6 +37,18 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Shorten checkout path for MSVC and vcpkg
+        working-directory: .
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $drive = [System.IO.Path]::GetPathRoot($env:GITHUB_WORKSPACE)
+          $checkout = Join-Path $env:GITHUB_WORKSPACE 'src'
+          $shortSource = Join-Path $drive 'lfs'
+          Move-Item -LiteralPath $checkout -Destination $shortSource
+          New-Item -ItemType Junction -Path $checkout -Target $shortSource | Out-Null
+          "LFS_SHORT_SOURCE=$shortSource" >> $env:GITHUB_ENV
+          "LFS_VCPKG_ROOT=$(Join-Path $drive 'vcpkg')" >> $env:GITHUB_ENV
+
       - name: Set up Windows CUDA 12.8
         run: |
           $ErrorActionPreference = 'Stop'
@@ -59,15 +71,14 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           "CUDA_PATH_V12_8=$env:CUDA_PATH" >> $env:GITHUB_ENV
           "$env:CUDA_PATH\bin" >> $env:GITHUB_PATH
-          "VCPKG_ROOT=$(Join-Path $env:RUNNER_TEMP 'vcpkg')" >> $env:GITHUB_ENV
 
       - name: Set up pinned vcpkg
         run: |
-          git clone --filter=blob:none --no-checkout https://github.com/microsoft/vcpkg.git "$env:VCPKG_ROOT"
+          git clone --filter=blob:none --no-checkout https://github.com/microsoft/vcpkg.git "$env:LFS_VCPKG_ROOT"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          git -C "$env:VCPKG_ROOT" checkout --detach "$env:VCPKG_COMMIT"
+          git -C "$env:LFS_VCPKG_ROOT" checkout --detach "$env:VCPKG_COMMIT"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & "$env:VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics
+          & "$env:LFS_VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Get-PSDrive -PSProvider FileSystem | Format-Table Name, Used, Free
 
@@ -76,6 +87,8 @@ jobs:
         run: |
           call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
           if errorlevel 1 exit /b 1
+          cd /d "%LFS_SHORT_SOURCE%" || exit /b 1
+          set "VCPKG_ROOT=%LFS_VCPKG_ROOT%"
           where clang-cl || if not exist "%VSINSTALLDIR%VC\Tools\Llvm\x64\bin\clang-cl.exe" if not exist "%VSINSTALLDIR%VC\Tools\Llvm\bin\clang-cl.exe" exit /b 1
           cmake --version || exit /b 1
           ninja --version || exit /b 1
@@ -91,6 +104,7 @@ jobs:
       - name: Verify portable package and make ZIP
         run: |
           $ErrorActionPreference = 'Stop'
+          Set-Location -LiteralPath $env:LFS_SHORT_SOURCE
           $bin = (Resolve-Path 'dist/bin').Path
           $exe = Join-Path $bin 'LichtFeld-Studio.exe'
           foreach ($path in @(
@@ -200,4 +214,5 @@ jobs:
             src/b/CMakeFiles/CMakeConfigureLog.yaml
             src/b/vcpkg-manifest-install.log
             src/b/vcpkg_installed/vcpkg/issue_body.md
+            src/b/vcpkg_installed/vcpkg/blds/**/*.log
             src/b/Testing/Temporary/LastTest.log
