@@ -49,6 +49,35 @@ jobs:
           "LFS_SHORT_SOURCE=$shortSource" >> $env:GITHUB_ENV
           "LFS_VCPKG_ROOT=$(Join-Path $drive 'vcpkg')" >> $env:GITHUB_ENV
 
+      - name: Restore pinned vcpkg checkout
+        id: vcpkg-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: ${{ env.LFS_VCPKG_ROOT }}
+          key: vcpkg-full-win-x64-${{ env.VCPKG_COMMIT }}
+
+      - name: Set up pinned vcpkg
+        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
+        run: |
+          git clone --no-checkout https://github.com/microsoft/vcpkg.git "$env:LFS_VCPKG_ROOT"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git -C "$env:LFS_VCPKG_ROOT" checkout --detach "$env:VCPKG_COMMIT"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          for ($attempt = 1; ; $attempt++) {
+            & "$env:LFS_VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics
+            if ($LASTEXITCODE -eq 0) { break }
+            if ($attempt -ge 4) { exit $LASTEXITCODE }
+            Start-Sleep -Seconds (15 * $attempt)
+          }
+          Get-PSDrive -PSProvider FileSystem | Format-Table Name, Used, Free
+
+      - name: Save pinned vcpkg checkout
+        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: ${{ env.LFS_VCPKG_ROOT }}
+          key: vcpkg-full-win-x64-${{ env.VCPKG_COMMIT }}
+
       - name: Set up Windows CUDA 12.8
         run: |
           $ErrorActionPreference = 'Stop'
@@ -71,16 +100,6 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           "CUDA_PATH_V12_8=$env:CUDA_PATH" >> $env:GITHUB_ENV
           "$env:CUDA_PATH\bin" >> $env:GITHUB_PATH
-
-      - name: Set up pinned vcpkg
-        run: |
-          git clone --no-checkout https://github.com/microsoft/vcpkg.git "$env:LFS_VCPKG_ROOT"
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          git -C "$env:LFS_VCPKG_ROOT" checkout --detach "$env:VCPKG_COMMIT"
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & "$env:LFS_VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          Get-PSDrive -PSProvider FileSystem | Format-Table Name, Used, Free
 
       - name: Configure Release and compile vcpkg dependencies
         shell: cmd
