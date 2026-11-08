@@ -152,11 +152,12 @@ jobs:
           if errorlevel 1 exit /b 1
           cd /d "%LFS_SHORT_SOURCE%" || exit /b 1
           set "VCPKG_ROOT=%LFS_VCPKG_ROOT%"
+          set "VCPKG_DOWNLOADS=%LFS_VCPKG_ROOT%\downloads"
           where clang-cl || if not exist "%VSINSTALLDIR%VC\Tools\Llvm\x64\bin\clang-cl.exe" if not exist "%VSINSTALLDIR%VC\Tools\Llvm\bin\clang-cl.exe" exit /b 1
           cmake --version || exit /b 1
           ninja --version || exit /b 1
           python tools\windows_build_preflight.py --source-only || exit /b 1
-          python tools\ci_retry_configure.py -- cmake --preset windows-release -B %BUILD_DIR% -DBUILD_PORTABLE=ON -DBUILD_CUDA_MIN_SM=89 -DBUILD_PYTHON_STUBS=OFF -DBUILD_LOCALIZATION_TESTS=ON -DLFS_VCPKG_CLEAN_AFTER_BUILD=ON -DENABLE_COMPILER_CACHE=OFF || exit /b 1
+          python tools\ci_retry_configure.py -- cmake --preset windows-release -B %BUILD_DIR% -DBUILD_PORTABLE=ON -DBUILD_CUDA_MIN_SM=89 -DBUILD_PYTHON_STUBS=OFF -DBUILD_LOCALIZATION_TESTS=ON -DLFS_VCPKG_CLEAN_AFTER_BUILD=ON -DENABLE_COMPILER_CACHE=OFF -DVCPKG_INSTALL_OPTIONS=--downloads-root=%VCPKG_DOWNLOADS% || exit /b 1
           findstr /r /x /c:"CMAKE_BUILD_TYPE:[A-Z]*=Release" %BUILD_DIR%\CMakeCache.txt || exit /b 1
           findstr /x /c:"CMAKE_CUDA_ARCHITECTURES:STRING=89-virtual" %BUILD_DIR%\CMakeCache.txt || exit /b 1
       - name: Cache downloaded and compiled dependencies for retry
@@ -175,6 +176,7 @@ jobs:
           if errorlevel 1 exit /b 1
           cd /d "%LFS_SHORT_SOURCE%" || exit /b 1
           set "VCPKG_ROOT=%LFS_VCPKG_ROOT%"
+          set "VCPKG_DOWNLOADS=%LFS_VCPKG_ROOT%\downloads"
           set "PATH=%CD%\%BUILD_DIR%\vcpkg_installed\x64-windows\bin;%PATH%"
           cmake --build %BUILD_DIR% --parallel 4 || exit /b 1
           ctest --test-dir %BUILD_DIR% --output-on-failure --no-tests=error -R "^LocalizationContracts$" || exit /b 1
