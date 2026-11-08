@@ -1,0 +1,203 @@
+name: LichtFeld Studio Windows x64 Release
+
+on:
+  push:
+    paths:
+      - '.github/workflows/windows-sm89.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    # Public repositories use GitHub's free standard runner allocation.
+    if: ${{ toJSON(github.event.repository.private) == 'false' }}
+    runs-on: windows-2022
+    timeout-minutes: 355
+    env:
+      LFS_SOURCE: 3a7e58d94b503dcb1a2afe4662a0934c35c36aa0
+      VCPKG_COMMIT: ec48c11eae9448c8c6e7739d93e06fa2433aa95f
+      CUDA_PATH: 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8'
+      BUILD_DIR: b
+      PACKAGE: LichtFeld-Studio-Windows-x64-SM89-3a7e58d.zip
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: src
+
+    steps:
+      - name: Checkout pinned official source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: MrNeRF/LichtFeld-Studio
+          ref: ${{ env.LFS_SOURCE }}
+          path: src
+          submodules: recursive
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Windows CUDA 12.8
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $nvcc = Join-Path $env:CUDA_PATH 'bin\nvcc.exe'
+          if (!(Test-Path -LiteralPath $nvcc)) {
+            $installer = Join-Path $env:RUNNER_TEMP 'cuda-12.8.exe'
+            $url = 'https://developer.download.nvidia.com/compute/cuda/12.8.0/local_installers/cuda_12.8.0_571.96_windows.exe'
+            curl.exe --fail --location --retry 3 --retry-delay 5 --output $installer $url
+            if ($LASTEXITCODE -ne 0) { throw "CUDA download failed ($LASTEXITCODE)" }
+            $signature = Get-AuthenticodeSignature -FilePath $installer
+            if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'NVIDIA Corporation') {
+              throw 'The CUDA installer did not pass NVIDIA signature verification'
+            }
+            $setup = Start-Process -FilePath $installer -ArgumentList '-y -s -accepteula -toolkit -override -noDisplayDriver' -Wait -PassThru
+            if ($setup.ExitCode -notin @(0, 3010)) { throw "CUDA installer failed ($($setup.ExitCode))" }
+            Remove-Item -LiteralPath $installer
+          }
+          if (!(Test-Path -LiteralPath $nvcc)) { throw 'CUDA 12.8 nvcc is missing' }
+          & $nvcc --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "CUDA_PATH_V12_8=$env:CUDA_PATH" >> $env:GITHUB_ENV
+          "$env:CUDA_PATH\bin" >> $env:GITHUB_PATH
+          "VCPKG_ROOT=$(Join-Path $env:RUNNER_TEMP 'vcpkg')" >> $env:GITHUB_ENV
+
+      - name: Set up pinned vcpkg
+        run: |
+          git clone --filter=blob:none --no-checkout https://github.com/microsoft/vcpkg.git "$env:VCPKG_ROOT"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git -C "$env:VCPKG_ROOT" checkout --detach "$env:VCPKG_COMMIT"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "$env:VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Get-PSDrive -PSProvider FileSystem | Format-Table Name, Used, Free
+
+      - name: Configure, compile and install upstream portable Release
+        shell: cmd
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+          if errorlevel 1 exit /b 1
+          where clang-cl || if not exist "%VSINSTALLDIR%VC\Tools\Llvm\x64\bin\clang-cl.exe" if not exist "%VSINSTALLDIR%VC\Tools\Llvm\bin\clang-cl.exe" exit /b 1
+          cmake --version || exit /b 1
+          ninja --version || exit /b 1
+          python tools\windows_build_preflight.py --source-only || exit /b 1
+          python tools\ci_retry_configure.py -- cmake --preset windows-release -B %BUILD_DIR% -DBUILD_PORTABLE=ON -DBUILD_CUDA_MIN_SM=89 -DBUILD_PYTHON_STUBS=OFF -DBUILD_LOCALIZATION_TESTS=ON -DLFS_VCPKG_CLEAN_AFTER_BUILD=ON -DENABLE_COMPILER_CACHE=OFF || exit /b 1
+          findstr /r /x /c:"CMAKE_BUILD_TYPE:[A-Z]*=Release" %BUILD_DIR%\CMakeCache.txt || exit /b 1
+          findstr /x /c:"CMAKE_CUDA_ARCHITECTURES:STRING=89-virtual" %BUILD_DIR%\CMakeCache.txt || exit /b 1
+          set "PATH=%CD%\%BUILD_DIR%\vcpkg_installed\x64-windows\bin;%PATH%"
+          cmake --build %BUILD_DIR% --parallel 4 || exit /b 1
+          ctest --test-dir %BUILD_DIR% --output-on-failure --no-tests=error -R "^LocalizationContracts$" || exit /b 1
+          cmake --install %BUILD_DIR% --config Release --prefix dist || exit /b 1
+
+      - name: Verify portable package and make ZIP
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $bin = (Resolve-Path 'dist/bin').Path
+          $exe = Join-Path $bin 'LichtFeld-Studio.exe'
+          foreach ($path in @(
+            'dist/LICENSE', 'dist/THIRD-PARTY-LICENSES.md',
+            'dist/bin/LichtFeld-Studio.exe', 'dist/bin/lfs_core.dll', 'dist/bin/lfs_visualizer.dll',
+            'dist/bin/cudart64_12.dll', 'dist/bin/nvjpeg2k_0.dll',
+            'dist/share/LichtFeld-Studio/assets/fonts',
+            'dist/share/LichtFeld-Studio/shaders/vulkan_rasterizer/user/manifest.json'
+          )) {
+            if (!(Test-Path -LiteralPath $path)) { throw "Missing packaged file: $path" }
+          }
+          if (!(Get-ChildItem 'dist/extensions' -Filter 'nvjpeg2k_ext*.dll')) {
+            throw 'Missing nvJPEG2000 extension'
+          }
+          if (!(Get-ChildItem 'dist/share/LichtFeld-Studio/shaders/vulkan_rasterizer' -Recurse -Filter '*.spv')) {
+            throw 'Missing compiled Vulkan shaders'
+          }
+          $ptx = & "$env:CUDA_PATH\bin\cuobjdump.exe" --list-ptx (Join-Path $bin 'lfs_core.dll')
+          if ($LASTEXITCODE -ne 0 -or ($ptx -join "`n") -notmatch 'sm_89') {
+            throw 'Could not verify the SM 89 CUDA PTX in lfs_core.dll'
+          }
+          $stream = [System.IO.File]::OpenRead($exe)
+          $reader = [System.IO.BinaryReader]::new($stream)
+          try {
+            if ($reader.ReadUInt16() -ne 0x5A4D) { throw 'Missing MZ executable signature' }
+            $stream.Position = 0x3C
+            $stream.Position = $reader.ReadUInt32()
+            if ($reader.ReadUInt32() -ne 0x4550 -or $reader.ReadUInt16() -ne 0x8664) {
+              throw 'Expected a Windows PE x64 executable'
+            }
+          } finally {
+            $reader.Dispose()
+          }
+          $driver = Join-Path $env:SystemRoot 'System32\nvcuda.dll'
+          $smoke = 'Skipped: the standard runner has no NVIDIA driver DLL'
+          if (Test-Path -LiteralPath $driver) {
+            $env:LFS_HOME = Join-Path $env:RUNNER_TEMP 'lfs-smoke-profile'
+            $previousPath = $env:PATH
+            Push-Location $env:RUNNER_TEMP
+            try {
+              $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
+              $version = & $exe --version
+              if ($LASTEXITCODE -ne 0 -or "$version" -notmatch '3a7e58d') {
+                throw "Version smoke test failed: $version"
+              }
+              & $exe --help
+              if ($LASTEXITCODE -ne 0) { throw 'Help smoke test failed' }
+              $smoke = "Passed: --version and --help ($version)"
+            } finally {
+              $env:PATH = $previousPath
+              Pop-Location
+            }
+          }
+          @(
+            "Source: https://github.com/MrNeRF/LichtFeld-Studio/tree/$env:LFS_SOURCE",
+            "Workflow: https://github.com/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID",
+            'Build: Windows x64 Release, CUDA 12.8, compute_89 PTX (driver JIT on RTX 4090)',
+            'Localization, package layout, x64 PE and SM 89 PTX checks passed.',
+            "CLI smoke test: $smoke",
+            'GPU test pending: open a splat, confirm viewport rendering, then run a short training job.'
+          ) | Set-Content dist/BUILD-INFO.txt
+          @(
+            'Extract the entire ZIP into G:\LichtFeld_Studio.',
+            'Run G:\LichtFeld_Studio\bin\LichtFeld-Studio.exe.',
+            'The upstream CUDA 12.8 build requires an NVIDIA driver from the 570 series or newer.'
+          ) | Set-Content dist/START-HERE.txt
+
+          $zip = Join-Path $env:GITHUB_WORKSPACE $env:PACKAGE
+          Compress-Archive -Path dist\* -DestinationPath $zip -CompressionLevel Optimal
+          @'
+          import sys
+          from zipfile import ZipFile
+
+          with ZipFile(sys.argv[1]) as package:
+              missing = {"bin/LichtFeld-Studio.exe", "LICENSE"} - set(package.namelist())
+              if missing:
+                  raise SystemExit(f"Missing ZIP entries: {sorted(missing)}")
+              corrupted = package.testzip()
+              if corrupted:
+                  raise SystemExit(f"Corrupt ZIP entry: {corrupted}")
+          '@ | python - $zip
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $digest = (Get-FileHash -Algorithm SHA256 -LiteralPath $zip).Hash.ToLowerInvariant()
+          @(
+            "Source: $env:LFS_SOURCE",
+            "CLI smoke test: $smoke",
+            "ZIP SHA-256: $digest"
+          ) | Add-Content $env:GITHUB_STEP_SUMMARY
+
+      - name: Upload downloadable ZIP
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          path: ${{ env.PACKAGE }}
+          archive: false
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Preserve diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: windows-build-diagnostics
+          if-no-files-found: ignore
+          retention-days: 7
+          path: |
+            src/b/CMakeCache.txt
+            src/b/CMakeFiles/CMakeConfigureLog.yaml
+            src/b/vcpkg-manifest-install.log
+            src/b/vcpkg_installed/vcpkg/issue_body.md
+            src/b/Testing/Temporary/LastTest.log
