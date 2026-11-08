@@ -48,6 +48,7 @@ jobs:
           New-Item -ItemType Junction -Path $checkout -Target $shortSource | Out-Null
           "LFS_SHORT_SOURCE=$shortSource" >> $env:GITHUB_ENV
           "LFS_VCPKG_ROOT=$(Join-Path $drive 'vcpkg')" >> $env:GITHUB_ENV
+          "VCPKG_DEFAULT_BINARY_CACHE=$(Join-Path $drive 'lfs-vcpkg-cache')" >> $env:GITHUB_ENV
 
       - name: Restore pinned vcpkg checkout
         id: vcpkg-cache
@@ -101,6 +102,31 @@ jobs:
           "CUDA_PATH_V12_8=$env:CUDA_PATH" >> $env:GITHUB_ENV
           "$env:CUDA_PATH\bin" >> $env:GITHUB_PATH
 
+      - name: Restore dependency downloads and compiled ports
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ${{ env.LFS_VCPKG_ROOT }}/downloads
+            ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: lfs-deps-win-x64-${{ env.LFS_SOURCE }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: lfs-deps-win-x64-${{ env.LFS_SOURCE }}-
+
+      - name: Seed the verified upstream Assimp patch
+        id: seed-deps
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $downloads = Join-Path $env:LFS_VCPKG_ROOT 'downloads'
+          New-Item -ItemType Directory -Force -Path $downloads, $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
+          $patch = Join-Path $downloads 'assimp_pr_6627.patch'
+          # git format-patch --full-index --no-signature -1 9a486a72e43f92222969bfac7054554f97dd253f
+          # Verified byte-for-byte against the hash in Microsoft's vcpkg portfile.
+          $encoded = 'RnJvbSA5YTQ4NmE3MmU0M2Y5MjIyMjk2OWJmYWM3MDU0NTU0Zjk3ZGQyNTNmIE1vbiBTZXAgMTcgMDA6MDA6MDAgMjAwMQpGcm9tOiBTaWx2aW8gVHJhdmVyc2FybyA8c2lsdmlvLnRyYXZlcnNhcm9AaWl0Lml0PgpEYXRlOiBUdWUsIDIgSnVuIDIwMjYgMTE6MjE6MjQgKzAyMDAKU3ViamVjdDogW1BBVENIXSBSZXF1aXJlIEMrKzE3IGZvciBwdWJsaWMgaGVhZGVycyBpbiBDTWFrZUxpc3RzICgjNjYyNykKCkNvLWF1dGhvcmVkLWJ5OiBLaW0gS3VsbGluZyA8a2lta3VsbGluZ0B1c2Vycy5ub3JlcGx5LmdpdGh1Yi5jb20+Ci0tLQogY29kZS9DTWFrZUxpc3RzLnR4dCB8IDMgKysrCiAxIGZpbGUgY2hhbmdlZCwgMyBpbnNlcnRpb25zKCspCgpkaWZmIC0tZ2l0IGEvY29kZS9DTWFrZUxpc3RzLnR4dCBiL2NvZGUvQ01ha2VMaXN0cy50eHQKaW5kZXggYjdiMDhkZTNiNzE1NmU1ZTdkOGVhM2Q1NzRlZDliMGY1OGY4NWZjMS4uOTg1ZDg3MmI5OTQyYjNiY2IwZDUwODc0MDg2ZjU1M2ZlNDQ2NzM4ZiAxMDA2NDQKLS0tIGEvY29kZS9DTWFrZUxpc3RzLnR4dAorKysgYi9jb2RlL0NNYWtlTGlzdHMudHh0CkBAIC0xNDcyLDYgKzE0NzIsOSBAQCBFTkRJRigpCiAjIGFkZHMgQ19GTEFHUyByZXF1aXJlZCB0byBjb21waWxlIHppcC5jIG9uIG9sZCBHQ0MgNC54IGNvbXBpbGVyCiBUQVJHRVRfQ09NUElMRV9GRUFUVVJFUyhhc3NpbXAgUFJJVkFURSBjX3N0ZF85OSkKIAorIyBQdWJsaWMgaGVhZGVycyB1c2UgaW5saW5lIGNvbnN0ZXhwciB0aGF0IHJlcXVpcmVzIGF0IGxlYXN0IEMrKzE3CitUQVJHRVRfQ09NUElMRV9GRUFUVVJFUyhhc3NpbXAgUFVCTElDIGN4eF9zdGRfMTcpCisKIFRBUkdFVF9JTkNMVURFX0RJUkVDVE9SSUVTICggYXNzaW1wIFBVQkxJQwogICAkPEJVSUxEX0lOVEVSRkFDRToke0NNQUtFX0NVUlJFTlRfU09VUkNFX0RJUn0vLi4vaW5jbHVkZT4KICAgJDxCVUlMRF9JTlRFUkZBQ0U6JHtDTUFLRV9DVVJSRU5UX0JJTkFSWV9ESVJ9Ly4uL2luY2x1ZGU+Cg=='
+          [System.IO.File]::WriteAllBytes($patch, [Convert]::FromBase64String($encoded))
+          $expected = '209d79e2366567cc8090e06684ef2da795a317c81d17694590e95051a62123219ab9b700bd0640e5ae0dd0d8bb9d8c9377dadc9168f08968d3b970244dbdc353'
+          if ((Get-FileHash -Algorithm SHA512 -LiteralPath $patch).Hash -ne $expected) {
+            throw 'Assimp patch SHA-512 mismatch'
+          }
+
       - name: Configure Release and compile vcpkg dependencies
         shell: cmd
         run: |
@@ -115,6 +141,15 @@ jobs:
           python tools\ci_retry_configure.py -- cmake --preset windows-release -B %BUILD_DIR% -DBUILD_PORTABLE=ON -DBUILD_CUDA_MIN_SM=89 -DBUILD_PYTHON_STUBS=OFF -DBUILD_LOCALIZATION_TESTS=ON -DLFS_VCPKG_CLEAN_AFTER_BUILD=ON -DENABLE_COMPILER_CACHE=OFF || exit /b 1
           findstr /r /x /c:"CMAKE_BUILD_TYPE:[A-Z]*=Release" %BUILD_DIR%\CMakeCache.txt || exit /b 1
           findstr /x /c:"CMAKE_CUDA_ARCHITECTURES:STRING=89-virtual" %BUILD_DIR%\CMakeCache.txt || exit /b 1
+      - name: Cache downloaded and compiled dependencies for retry
+        if: ${{ !cancelled() && steps.seed-deps.outcome == 'success' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ${{ env.LFS_VCPKG_ROOT }}/downloads
+            ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: lfs-deps-win-x64-${{ env.LFS_SOURCE }}-${{ github.run_id }}-${{ github.run_attempt }}
+
       - name: Compile, test and install upstream portable Release
         shell: cmd
         run: |
