@@ -74,7 +74,7 @@ jobs:
 
       - name: Set up pinned vcpkg
         run: |
-          git clone --filter=blob:none --no-checkout https://github.com/microsoft/vcpkg.git "$env:LFS_VCPKG_ROOT"
+          git clone --no-checkout https://github.com/microsoft/vcpkg.git "$env:LFS_VCPKG_ROOT"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           git -C "$env:LFS_VCPKG_ROOT" checkout --detach "$env:VCPKG_COMMIT"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -82,7 +82,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Get-PSDrive -PSProvider FileSystem | Format-Table Name, Used, Free
 
-      - name: Configure, compile and install upstream portable Release
+      - name: Configure Release and compile vcpkg dependencies
         shell: cmd
         run: |
           call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
@@ -96,6 +96,13 @@ jobs:
           python tools\ci_retry_configure.py -- cmake --preset windows-release -B %BUILD_DIR% -DBUILD_PORTABLE=ON -DBUILD_CUDA_MIN_SM=89 -DBUILD_PYTHON_STUBS=OFF -DBUILD_LOCALIZATION_TESTS=ON -DLFS_VCPKG_CLEAN_AFTER_BUILD=ON -DENABLE_COMPILER_CACHE=OFF || exit /b 1
           findstr /r /x /c:"CMAKE_BUILD_TYPE:[A-Z]*=Release" %BUILD_DIR%\CMakeCache.txt || exit /b 1
           findstr /x /c:"CMAKE_CUDA_ARCHITECTURES:STRING=89-virtual" %BUILD_DIR%\CMakeCache.txt || exit /b 1
+      - name: Compile, test and install upstream portable Release
+        shell: cmd
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+          if errorlevel 1 exit /b 1
+          cd /d "%LFS_SHORT_SOURCE%" || exit /b 1
+          set "VCPKG_ROOT=%LFS_VCPKG_ROOT%"
           set "PATH=%CD%\%BUILD_DIR%\vcpkg_installed\x64-windows\bin;%PATH%"
           cmake --build %BUILD_DIR% --parallel 4 || exit /b 1
           ctest --test-dir %BUILD_DIR% --output-on-failure --no-tests=error -R "^LocalizationContracts$" || exit /b 1
