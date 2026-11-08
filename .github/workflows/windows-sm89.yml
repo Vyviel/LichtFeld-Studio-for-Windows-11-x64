@@ -145,29 +145,30 @@ jobs:
             }
           }
 
-          # The standard GitHub redirect for oneTBB has intermittently returned HTTP 504.
-          # Try the archive host directly, with the exact pinned vcpkg SHA-512.
-          $tbb = Join-Path $downloads 'oneapi-src-oneTBB-v2022.3.0.tar.gz'
-          $tbbHash = 'fdc50589785b1949ca1dd4429bbcedb180be4b8966da5243ddd1f8e9f97310dd603681e0bb83c1d6c2d3e27932f577ef6739e4e82f3c54af147f4d6d906b39f1'
-          if (!(Test-Path -LiteralPath $tbb) -or (Get-FileHash -Algorithm SHA512 -LiteralPath $tbb).Hash -ne $tbbHash) {
-            $tempArchive = "$tbb.partial"
-            $urls = @(
-              'https://codeload.github.com/oneapi-src/oneTBB/tar.gz/refs/tags/v2022.3.0',
-              'https://github.com/oneapi-src/oneTBB/archive/v2022.3.0.tar.gz'
-            )
-            foreach ($url in $urls) {
-              curl.exe --fail --location --retry 4 --retry-delay 5 --connect-timeout 20 --max-time 120 --output $tempArchive $url
-              if ($LASTEXITCODE -eq 0 -and (Get-FileHash -Algorithm SHA512 -LiteralPath $tempArchive).Hash -eq $tbbHash) {
-                Move-Item -Force -LiteralPath $tempArchive -Destination $tbb
-                break
-              }
+          # Bypass flaky archive redirects using GitHub's official archive host.
+          $archives = @(
+            @{ Repo = 'oneapi-src/oneTBB'; Tag = 'v2022.3.0'; SHA512 = 'fdc50589785b1949ca1dd4429bbcedb180be4b8966da5243ddd1f8e9f97310dd603681e0bb83c1d6c2d3e27932f577ef6739e4e82f3c54af147f4d6d906b39f1' }
+            @{ Repo = 'zeux/volk'; Tag = 'vulkan-sdk-1.4.341.0'; SHA512 = '188fdbadff7dd99d1e04519f26dffc85f4d45e2af69d84a4806ee4bc02322a4099002211f327775ec20380744afe3ca7f41eb62dc7763cd8dc5ba8920fb8ef20' }
+            @{ Repo = 'GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator'; Tag = 'v3.3.0'; SHA512 = 'deb5902ef8db0e329fbd5f3f4385eb0e26bdd9f14f3a2334823fb3fe18f36bc5d235d620d6e5f6fe3551ec3ea7038638899db8778c09f6d5c278f5ff95c3344b' }
+            @{ Repo = 'facebook/zstd'; Tag = 'v1.5.7'; SHA512 = '26e441267305f6e58080460f96ab98645219a90d290a533410b1b0b1d2f870721c95f8384e342ee647c5e968385a5b7e30c2d04340c37f59b3e6d86762c3260c' }
+          )
+          foreach ($asset in $archives) {
+            $repoName = $asset.Repo -replace '/', '-'
+            $archive = Join-Path $downloads "$repoName-$($asset.Tag).tar.gz"
+            if ((Test-Path -LiteralPath $archive) -and (Get-FileHash -Algorithm SHA512 -LiteralPath $archive).Hash -eq $asset.SHA512) {
+              continue
+            }
+            $tempArchive = "$archive.partial"
+            $url = "https://codeload.github.com/$($asset.Repo)/tar.gz/refs/tags/$($asset.Tag)"
+            curl.exe --fail --location --retry 4 --retry-delay 5 --connect-timeout 20 --max-time 120 --output $tempArchive $url
+            if ($LASTEXITCODE -eq 0 -and (Get-FileHash -Algorithm SHA512 -LiteralPath $tempArchive).Hash -eq $asset.SHA512) {
+              Move-Item -Force -LiteralPath $tempArchive -Destination $archive
+            } else {
               if (Test-Path -LiteralPath $tempArchive) { Remove-Item -LiteralPath $tempArchive }
+              Write-Warning "Could not prefetch $($asset.Repo) $($asset.Tag). vcpkg will try the pinned URL."
             }
-            if (!(Test-Path -LiteralPath $tbb)) {
-              Write-Warning 'oneTBB prefetch did not succeed. vcpkg will try the pinned URL.'
-            }
-            $global:LASTEXITCODE = 0
           }
+          $global:LASTEXITCODE = 0
 
       - name: Configure Release and compile vcpkg dependencies
         shell: cmd
